@@ -3,11 +3,16 @@ import os
 import psutil
 import secrets
 import ipaddress
+import logging
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from typing import Set, List
 
 load_dotenv()
+
+# Ћогирование в stdout дл€ docker logs
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("ip_agent")
 
 def parse_bool(val: str) -> bool:
     return str(val).lower() in ("1", "true", "yes", "on")
@@ -34,6 +39,7 @@ def parse_trusted_ips(raw: str) -> List[ipaddress._BaseNetwork]:
             net = ipaddress.ip_network(p, strict=False)
             nets.append(net)
         except Exception:
+            logger.warning("Failed to parse TRUSTED_IP entry: %s", p)
             continue
     return nets
 
@@ -45,9 +51,10 @@ app = FastAPI(title="ip_agent", version="0.1")
 @app.on_event("startup")
 def _startup_log():
     if TRUSTED_NETWORKS:
-        print("TRUSTED_NETWORKS:", [str(n) for n in TRUSTED_NETWORKS])
+        logger.info("TRUSTED_NETWORKS: %s", [str(n) for n in TRUSTED_NETWORKS])
     else:
-        print("TRUSTED_NETWORKS: (none configured)")
+        logger.info("TRUSTED_NETWORKS: (none configured)")
+    logger.info("TRUSTED_IPS_RAW: %s", TRUSTED_IPS_RAW)
 
 def get_client_ip(request: Request) -> str:
     xff = request.headers.get("x-forwarded-for")
@@ -165,7 +172,6 @@ def connections(user: str = Depends(verify_credentials), request: Request = None
         "access_granted_as": user,
     }
 
-# ќтладочный роут Ч показывает распарсенные сети. ”далите/защитите в проде.
 @app.get("/debug/trusted")
 def debug_trusted(user: str = Depends(verify_credentials)):
     return {"trusted_networks": [str(n) for n in TRUSTED_NETWORKS]}
