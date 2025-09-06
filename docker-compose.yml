@@ -1,7 +1,8 @@
+version: "3.8"
 services:
-  mrz_agent:
+  ip_agent:
     build: .
-    container_name: mrz_agent
+    container_name: ip_agent
     env_file:
       - .env
     network_mode: "host"

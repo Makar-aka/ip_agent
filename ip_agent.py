@@ -2,19 +2,26 @@ from dotenv import load_dotenv
 import os
 import psutil
 import secrets
+import ipaddress
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from typing import Set, List
+from typing import Set
 
 load_dotenv()
+
+def parse_bool(val: str) -> bool:
+    return str(val).lower() in ("1", "true", "yes", "on")
 
 API_USER = os.getenv("API_USER", "admin")
 API_PASS = os.getenv("API_PASS", "password")
 API_LISTEN_PORT = int(os.getenv("API_LISTEN_PORT", "8000"))
 MONITOR_PORT = int(os.getenv("MONITOR_PORT", "22"))
 
+COUNT_IPV4 = parse_bool(os.getenv("COUNT_IPV4", "true"))
+COUNT_IPV6 = parse_bool(os.getenv("COUNT_IPV6", "true"))
+
 security = HTTPBasic()
-app = FastAPI(title="mrz_agent", version="0.1")
+app = FastAPI(title="ip_agent", version="0.1")
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     correct_user = secrets.compare_digest(credentials.username, API_USER)
@@ -27,15 +34,15 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
         )
     return credentials.username
 
-def get_unique_remote_ips(port: int) -> Set[str]:
+def get_unique_remote_ips(port: int, count_ipv4: bool = True, count_ipv6: bool = True) -> Set[str]:
     ips = set()
+    if not (count_ipv4 or count_ipv6):
+        return ips
     try:
         conns = psutil.net_connections(kind='tcp')
     except Exception:
-        # В некоторых окружениях psutil может требовать повышенных прав.
         conns = []
     for c in conns:
-        # laddr and raddr are psutil._common.addr tuples; raddr may be empty
         if not c.laddr:
             continue
         try:
@@ -52,8 +59,17 @@ def get_unique_remote_ips(port: int) -> Set[str]:
             rip = c.raddr.ip
         except Exception:
             continue
-        if rip:
-            ips.add(rip)
+        if not rip:
+            continue
+        try:
+            ver = ipaddress.ip_address(rip).version
+        except Exception:
+            continue
+        if ver == 4 and not count_ipv4:
+            continue
+        if ver == 6 and not count_ipv6:
+            continue
+        ips.add(rip)
     return ips
 
 @app.get("/health")
@@ -62,9 +78,15 @@ def health():
 
 @app.get("/connections")
 def connections(user: str = Depends(verify_credentials)):
-    ips = sorted(get_unique_remote_ips(MONITOR_PORT))
-    return {"count": len(ips), "ips": ips, "port": MONITOR_PORT}
+    ips = sorted(get_unique_remote_ips(MONITOR_PORT, COUNT_IPV4, COUNT_IPV6))
+    return {
+        "count": len(ips),
+        "ips": ips,
+        "port": MONITOR_PORT,
+        "count_ipv4_enabled": COUNT_IPV4,
+        "count_ipv6_enabled": COUNT_IPV6,
+    }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("mrz_agent:app", host="0.0.0.0", port=API_LISTEN_PORT, log_level="info")
+    uvicorn.run("ip_agent:app", host="0.0.0.0", port=API_LISTEN_PORT, log_level="info")
