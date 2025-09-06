@@ -10,7 +10,6 @@ from typing import Set, List
 
 load_dotenv()
 
-# Ћогирование в stdout дл¤ docker logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ip_agent")
 
@@ -171,10 +170,6 @@ def connections(user: str = Depends(verify_credentials), request: Request = None
         "client_ip": client_ip,
         "access_granted_as": user,
     }
-
-@app.get("/debug/trusted")
-def debug_trusted(user: str = Depends(verify_credentials)):
-    return {"trusted_networks": [str(n) for n in TRUSTED_NETWORKS]}
 
 if __name__ == "__main__":
     import uvicorn
