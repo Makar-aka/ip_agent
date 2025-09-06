@@ -1,0 +1,8 @@
+services:
+  mrz_agent:
+    build: .
+    container_name: mrz_agent
+    env_file:
+      - .env
+    network_mode: "host"
+    restart: unless-stopped
