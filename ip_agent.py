@@ -3,9 +3,9 @@ import os
 import psutil
 import secrets
 import ipaddress
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from typing import Set
+from typing import Set, List
 
 load_dotenv()
 
@@ -20,10 +20,53 @@ MONITOR_PORT = int(os.getenv("MONITOR_PORT", "22"))
 COUNT_IPV4 = parse_bool(os.getenv("COUNT_IPV4", "true"))
 COUNT_IPV6 = parse_bool(os.getenv("COUNT_IPV6", "true"))
 
+TRUSTED_IPS_RAW = os.getenv("TRUSTED_IPS", "").strip()
+
+def parse_trusted_ips(raw: str) -> List[ipaddress._BaseNetwork]:
+    nets: List[ipaddress._BaseNetwork] = []
+    if not raw:
+        return nets
+    for part in raw.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        try:
+            net = ipaddress.ip_network(p, strict=False)
+            nets.append(net)
+        except Exception:
+            continue
+    return nets
+
+TRUSTED_NETWORKS = parse_trusted_ips(TRUSTED_IPS_RAW)
+
 security = HTTPBasic()
 app = FastAPI(title="ip_agent", version="0.1")
 
-def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+def is_trusted_client(remote_ip: str) -> bool:
+    if not TRUSTED_NETWORKS:
+        return False
+    try:
+        ip_obj = ipaddress.ip_address(remote_ip)
+    except Exception:
+        return False
+    for net in TRUSTED_NETWORKS:
+        if ip_obj in net:
+            return True
+        if ip_obj.version == 6 and getattr(ip_obj, "ipv4_mapped", None) is not None:
+            if ip_obj.ipv4_mapped in net:
+                return True
+    return False
+
+def verify_credentials(
+    credentials: HTTPBasicCredentials = Depends(security),
+    request: Request = None,
+):
+    client_ip = None
+    if request and request.client:
+        client_ip = request.client.host
+    if client_ip and is_trusted_client(client_ip):
+        return "trusted:" + client_ip
+
     correct_user = secrets.compare_digest(credentials.username, API_USER)
     correct_pass = secrets.compare_digest(credentials.password, API_PASS)
     if not (correct_user and correct_pass):
@@ -61,7 +104,7 @@ def get_unique_remote_ips(port: int, count_ipv4: bool = True, count_ipv6: bool =
             continue
         if not rip:
             continue
-               
+
         if '%' in rip:
             rip = rip.split('%', 1)[0]
 
@@ -95,14 +138,18 @@ def health():
     return {"status": "ok"}
 
 @app.get("/connections")
-def connections(user: str = Depends(verify_credentials)):
+def connections(user: str = Depends(verify_credentials), request: Request = None):
     ips = sorted(get_unique_remote_ips(MONITOR_PORT, COUNT_IPV4, COUNT_IPV6))
+    client_ip = request.client.host if request and request.client else None
     return {
         "count": len(ips),
         "ips": ips,
         "port": MONITOR_PORT,
         "count_ipv4_enabled": COUNT_IPV4,
         "count_ipv6_enabled": COUNT_IPV6,
+        "trusted_ips_configured": TRUSTED_IPS_RAW,
+        "client_ip": client_ip,
+        "access_granted_as": user,
     }
 
 if __name__ == "__main__":
