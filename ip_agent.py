@@ -10,7 +10,7 @@ from typing import Set, List
 
 load_dotenv()
 
-# Логирование в stdout для docker logs
+# Р‹РѕРіРёСЂРѕРІР°РЅРёРµ РІ stdout РґР»В¤ docker logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ip_agent")
 
