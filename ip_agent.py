@@ -83,7 +83,6 @@ def get_unique_remote_ips(port: int, count_ipv4: bool = True, count_ipv6: bool =
             ips.add(str(ip_obj))
             continue
 
-        # Чистый IPv6
         if ip_obj.version == 6:
             if not count_ipv6:
                 continue
