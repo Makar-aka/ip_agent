@@ -9,4 +9,4 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["python", "mrz_agent.py"]
+CMD ["python", "ip_agent.py"]
