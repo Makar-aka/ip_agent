@@ -42,8 +42,25 @@ TRUSTED_NETWORKS = parse_trusted_ips(TRUSTED_IPS_RAW)
 security = HTTPBasic()
 app = FastAPI(title="ip_agent", version="0.1")
 
+@app.on_event("startup")
+def _startup_log():
+    if TRUSTED_NETWORKS:
+        print("TRUSTED_NETWORKS:", [str(n) for n in TRUSTED_NETWORKS])
+    else:
+        print("TRUSTED_NETWORKS: (none configured)")
+
+def get_client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    if request.client:
+        return request.client.host
+    return ""
+
 def is_trusted_client(remote_ip: str) -> bool:
-    if not TRUSTED_NETWORKS:
+    if not TRUSTED_NETWORKS or not remote_ip:
         return False
     try:
         ip_obj = ipaddress.ip_address(remote_ip)
@@ -57,16 +74,12 @@ def is_trusted_client(remote_ip: str) -> bool:
                 return True
     return False
 
-def verify_credentials(
-    credentials: HTTPBasicCredentials = Depends(security),
-    request: Request = None,
-):
-    client_ip = None
-    if request and request.client:
-        client_ip = request.client.host
+async def verify_credentials(request: Request):
+    client_ip = get_client_ip(request)
     if client_ip and is_trusted_client(client_ip):
         return "trusted:" + client_ip
 
+    credentials: HTTPBasicCredentials = await security(request)
     correct_user = secrets.compare_digest(credentials.username, API_USER)
     correct_pass = secrets.compare_digest(credentials.password, API_PASS)
     if not (correct_user and correct_pass):
@@ -140,7 +153,7 @@ def health():
 @app.get("/connections")
 def connections(user: str = Depends(verify_credentials), request: Request = None):
     ips = sorted(get_unique_remote_ips(MONITOR_PORT, COUNT_IPV4, COUNT_IPV6))
-    client_ip = request.client.host if request and request.client else None
+    client_ip = get_client_ip(request) if request else None
     return {
         "count": len(ips),
         "ips": ips,
@@ -151,6 +164,11 @@ def connections(user: str = Depends(verify_credentials), request: Request = None
         "client_ip": client_ip,
         "access_granted_as": user,
     }
+
+# ќтладочный роут Ч показывает распарсенные сети. ”далите/защитите в проде.
+@app.get("/debug/trusted")
+def debug_trusted(user: str = Depends(verify_credentials)):
+    return {"trusted_networks": [str(n) for n in TRUSTED_NETWORKS]}
 
 if __name__ == "__main__":
     import uvicorn
