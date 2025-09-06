@@ -157,9 +157,8 @@ def health():
     return {"status": "ok"}
 
 @app.get("/connections")
-def connections(user: str = Depends(verify_credentials), request: Request = None):
+def connections(user: str = Depends(verify_credentials)):
     ips = sorted(get_unique_remote_ips(MONITOR_PORT, COUNT_IPV4, COUNT_IPV6))
-    client_ip = get_client_ip(request) if request else None
     return {
         "count": len(ips),
         "ips": ips,
@@ -167,8 +166,6 @@ def connections(user: str = Depends(verify_credentials), request: Request = None
         "count_ipv4_enabled": COUNT_IPV4,
         "count_ipv6_enabled": COUNT_IPV6,
         "trusted_ips_configured": TRUSTED_IPS_RAW,
-        "client_ip": client_ip,
-        "access_granted_as": user,
     }
 
 if __name__ == "__main__":
