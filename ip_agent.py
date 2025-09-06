@@ -61,15 +61,34 @@ def get_unique_remote_ips(port: int, count_ipv4: bool = True, count_ipv6: bool =
             continue
         if not rip:
             continue
+               
+        if '%' in rip:
+            rip = rip.split('%', 1)[0]
+
         try:
-            ver = ipaddress.ip_address(rip).version
+            ip_obj = ipaddress.ip_address(rip)
         except Exception:
             continue
-        if ver == 4 and not count_ipv4:
+
+        if ip_obj.version == 6 and getattr(ip_obj, "ipv4_mapped", None) is not None:
+            mapped = str(ip_obj.ipv4_mapped)
+            if not count_ipv4:
+                continue
+            ips.add(mapped)
             continue
-        if ver == 6 and not count_ipv6:
+
+        if ip_obj.version == 4:
+            if not count_ipv4:
+                continue
+            ips.add(str(ip_obj))
             continue
-        ips.add(rip)
+
+        # Чистый IPv6
+        if ip_obj.version == 6:
+            if not count_ipv6:
+                continue
+            ips.add(str(ip_obj))
+
     return ips
 
 @app.get("/health")
