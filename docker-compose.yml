@@ -1,7 +1,9 @@
 version: "3.8"
 services:
   ip_agent:
-    build: .
+    build:
+      context: https://github.com/Makar-aka/mrz_agent.git#master
+      dockerfile: Dockerfile
     container_name: ip_agent
     env_file:
       - .env
