@@ -98,8 +98,8 @@ async def verify_credentials(request: Request):
 
 def get_connection_stats(port: int, count_ipv4: bool = True, count_ipv6: bool = True) -> Tuple[Set[str], int]:
     """
-    Возвращает кортеж из множества уникальных IP и общего количества соединений
-    с учётом настроек count_ipv4/count_ipv6
+    Р’РѕР·РІСЂР°С‰Р°РµС‚ РєРѕСЂС‚РµР¶ РёР· РјРЅРѕР¶РµСЃС‚РІР° СѓРЅРёРєР°Р»СЊРЅС‹С… IP Рё РѕР±С‰РµРіРѕ РєРѕР»РёС‡РµСЃС‚РІР° СЃРѕРµРґРёРЅРµРЅРёР№
+    СЃ СѓС‡С‘С‚РѕРј РЅР°СЃС‚СЂРѕРµРє count_ipv4/count_ipv6
     """
     ips = set()
     count_all = 0
@@ -137,7 +137,7 @@ def get_connection_stats(port: int, count_ipv4: bool = True, count_ipv6: bool = 
         except Exception:
             continue
 
-        # Увеличиваем счётчик с учётом настроек IPv4/IPv6
+        # РЈРІРµР»РёС‡РёРІР°РµРј СЃС‡С‘С‚С‡РёРє СЃ СѓС‡С‘С‚РѕРј РЅР°СЃС‚СЂРѕРµРє IPv4/IPv6
         if ip_obj.version == 6 and getattr(ip_obj, "ipv4_mapped", None) is not None:
             mapped = str(ip_obj.ipv4_mapped)
             if not count_ipv4:
