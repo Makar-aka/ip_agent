@@ -4,29 +4,35 @@ import psutil
 import secrets
 import ipaddress
 import logging
-import json
-import grpc
-import re
+import importlib
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from typing import Set, List, Tuple, Dict, Any, Optional
-
-# Импортируем proto файлы для работы с Xray API
-# Добавим пути импорта после установки
-try:
-    import xray.app.stats.command_pb2 as stats_pb2
-    import xray.app.stats.command_pb2_grpc as stats_pb2_grpc
-    import xray.app.proxyman.command_pb2 as proxyman_pb2
-    import xray.app.proxyman.command_pb2_grpc as proxyman_pb2_grpc
-    XRAY_API_AVAILABLE = True
-except ImportError:
-    XRAY_API_AVAILABLE = False
-    logging.warning("Xray API modules not available, Xray integration disabled")
+from typing import Set, List, Tuple, Optional
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ip_agent")
+
+# Попытка динамически импортировать xray protobuf модули
+XRAY_API_AVAILABLE = False
+_xray_modules = []
+for mod in (
+    "xray.app.stats.command_pb2",
+    "xray.app.stats.command_pb2_grpc",
+    "xray.app.proxyman.command_pb2",
+    "xray.app.proxyman.command_pb2_grpc",
+):
+    try:
+        _ = importlib.import_module(mod)
+        _xray_modules.append(mod)
+    except Exception:
+        # не фатально — логируем ниже в lifespan
+        pass
+
+if len(_xray_modules) == 4:
+    XRAY_API_AVAILABLE = True
 
 def parse_bool(val: str) -> bool:
     return str(val).lower() in ("1", "true", "yes", "on")
@@ -35,11 +41,6 @@ API_USER = os.getenv("API_USER", "admin")
 API_PASS = os.getenv("API_PASS", "password")
 API_LISTEN_PORT = int(os.getenv("API_LISTEN_PORT", "8000"))
 MONITOR_PORT = int(os.getenv("MONITOR_PORT", "22"))
-
-# Настройки для Xray API
-XRAY_API_ENABLED = parse_bool(os.getenv("XRAY_API_ENABLED", "false"))
-XRAY_API_HOST = os.getenv("XRAY_API_HOST", "127.0.0.1")
-XRAY_API_PORT = int(os.getenv("XRAY_API_PORT", "10085"))
 
 COUNT_IPV4 = parse_bool(os.getenv("COUNT_IPV4", "true"))
 COUNT_IPV6 = parse_bool(os.getenv("COUNT_IPV6", "true"))
@@ -64,22 +65,36 @@ def parse_trusted_ips(raw: str) -> List[ipaddress._BaseNetwork]:
 
 TRUSTED_NETWORKS = parse_trusted_ips(TRUSTED_IPS_RAW)
 
+# Xray API config
+XRAY_API_ENABLED = parse_bool(os.getenv("XRAY_API_ENABLED", "false"))
+XRAY_API_HOST = os.getenv("XRAY_API_HOST", "127.0.0.1")
+XRAY_API_PORT = int(os.getenv("XRAY_API_PORT", "10085"))
+
 security = HTTPBasic()
 app = FastAPI(title="ip_agent", version="0.1")
 
-@app.on_event("startup")
-def _startup_log():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # startup
     if TRUSTED_NETWORKS:
         logger.info("TRUSTED_NETWORKS: %s", [str(n) for n in TRUSTED_NETWORKS])
     else:
         logger.info("TRUSTED_NETWORKS: (none configured)")
     logger.info("TRUSTED_IPS_RAW: %s", TRUSTED_IPS_RAW)
-    
+
     if XRAY_API_ENABLED:
         if XRAY_API_AVAILABLE:
-            logger.info(f"Xray API integration enabled: {XRAY_API_HOST}:{XRAY_API_PORT}")
+            logger.info("Xray API modules available: %s", _xray_modules)
+            logger.info("Xray API enabled at %s:%s", XRAY_API_HOST, XRAY_API_PORT)
         else:
-            logger.error("Xray API enabled in config but dependencies not available")
+            logger.error("Xray API enabled in config but protobuf modules not available; install package that provides xray.app.* modules (e.g. xray-python) and rebuild image")
+    else:
+        logger.info("Xray API integration disabled (XRAY_API_ENABLED=false)")
+
+    yield
+    # shutdown (если нужно) — ничего не делаем
+
+app.router.lifespan_context = lifespan
 
 def get_client_ip(request: Request) -> str:
     xff = request.headers.get("x-forwarded-for")
