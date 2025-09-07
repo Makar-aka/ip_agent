@@ -4,9 +4,24 @@ import psutil
 import secrets
 import ipaddress
 import logging
+import json
+import grpc
+import re
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from typing import Set, List, Tuple
+from typing import Set, List, Tuple, Dict, Any, Optional
+
+# Импортируем proto файлы для работы с Xray API
+# Добавим пути импорта после установки
+try:
+    import xray.app.stats.command_pb2 as stats_pb2
+    import xray.app.stats.command_pb2_grpc as stats_pb2_grpc
+    import xray.app.proxyman.command_pb2 as proxyman_pb2
+    import xray.app.proxyman.command_pb2_grpc as proxyman_pb2_grpc
+    XRAY_API_AVAILABLE = True
+except ImportError:
+    XRAY_API_AVAILABLE = False
+    logging.warning("Xray API modules not available, Xray integration disabled")
 
 load_dotenv()
 
@@ -20,6 +35,11 @@ API_USER = os.getenv("API_USER", "admin")
 API_PASS = os.getenv("API_PASS", "password")
 API_LISTEN_PORT = int(os.getenv("API_LISTEN_PORT", "8000"))
 MONITOR_PORT = int(os.getenv("MONITOR_PORT", "22"))
+
+# Настройки для Xray API
+XRAY_API_ENABLED = parse_bool(os.getenv("XRAY_API_ENABLED", "false"))
+XRAY_API_HOST = os.getenv("XRAY_API_HOST", "127.0.0.1")
+XRAY_API_PORT = int(os.getenv("XRAY_API_PORT", "10085"))
 
 COUNT_IPV4 = parse_bool(os.getenv("COUNT_IPV4", "true"))
 COUNT_IPV6 = parse_bool(os.getenv("COUNT_IPV6", "true"))
@@ -54,6 +74,12 @@ def _startup_log():
     else:
         logger.info("TRUSTED_NETWORKS: (none configured)")
     logger.info("TRUSTED_IPS_RAW: %s", TRUSTED_IPS_RAW)
+    
+    if XRAY_API_ENABLED:
+        if XRAY_API_AVAILABLE:
+            logger.info(f"Xray API integration enabled: {XRAY_API_HOST}:{XRAY_API_PORT}")
+        else:
+            logger.error("Xray API enabled in config but dependencies not available")
 
 def get_client_ip(request: Request) -> str:
     xff = request.headers.get("x-forwarded-for")
@@ -137,7 +163,6 @@ def get_connection_stats(port: int, count_ipv4: bool = True, count_ipv6: bool = 
         except Exception:
             continue
 
-        # Увеличиваем счётчик с учётом настроек IPv4/IPv6
         if ip_obj.version == 6 and getattr(ip_obj, "ipv4_mapped", None) is not None:
             mapped = str(ip_obj.ipv4_mapped)
             if not count_ipv4:
@@ -161,22 +186,93 @@ def get_connection_stats(port: int, count_ipv4: bool = True, count_ipv6: bool = 
 
     return ips, count_all
 
+def get_xray_connections() -> Optional[Tuple[Set[str], int]]:
+    """
+    Получает данные о подключениях из Xray API
+    Возвращает кортеж (уникальные IP, количество подключений)
+    """
+    if not XRAY_API_ENABLED or not XRAY_API_AVAILABLE:
+        return None
+    
+    ips = set()
+    count_all = 0
+    
+    try:
+        channel = grpc.insecure_channel(f"{XRAY_API_HOST}:{XRAY_API_PORT}")
+        
+        # Получение статистики
+        stats_stub = stats_pb2_grpc.StatsServiceStub(channel)
+        response = stats_stub.QueryStats(stats_pb2.QueryStatsRequest())
+        
+        # Паттерн для извлечения IP из строки вида user>>>[ip]
+        ip_pattern = re.compile(r"user>>>([^>]+)")
+        
+        for stat in response.stat:
+            if "user>>>" in stat.name and "uplink" in stat.name:
+                match = ip_pattern.search(stat.name)
+                if match:
+                    ip = match.group(1)
+                    
+                    try:
+                        ip_obj = ipaddress.ip_address(ip)
+                        
+                        # Проверяем версию IP и настройки
+                        if ip_obj.version == 4 and not COUNT_IPV4:
+                            continue
+                        if ip_obj.version == 6 and not COUNT_IPV6:
+                            continue
+                        
+                        ips.add(ip)
+                        count_all += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to parse Xray IP: {ip} - {e}")
+                        continue
+    
+    except Exception as e:
+        logger.error(f"Error connecting to Xray API: {e}")
+        return None
+    
+    return ips, count_all
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 @app.get("/connections")
 def connections(user: str = Depends(verify_credentials)):
-    unique_ips, count_all = get_connection_stats(MONITOR_PORT, COUNT_IPV4, COUNT_IPV6)
-    return {
-        "count": len(unique_ips),
-        "count_all": count_all,
-        "ips": sorted(unique_ips),
+    # Получаем данные из системных соединений
+    system_ips, system_count = get_connection_stats(MONITOR_PORT, COUNT_IPV4, COUNT_IPV6)
+    
+    # Если включена интеграция с Xray, пытаемся получить данные оттуда
+    xray_result = get_xray_connections() if XRAY_API_ENABLED and XRAY_API_AVAILABLE else None
+    
+    result = {
+        "count": len(system_ips),
+        "count_all": system_count,
+        "ips": sorted(system_ips),
         "port": MONITOR_PORT,
         "count_ipv4_enabled": COUNT_IPV4,
         "count_ipv6_enabled": COUNT_IPV6,
         "trusted_ips_configured": TRUSTED_IPS_RAW,
     }
+    
+    # Добавляем данные Xray, если они доступны
+    if xray_result is not None:
+        xray_ips, xray_count = xray_result
+        result["xray_enabled"] = True
+        result["xray_count"] = len(xray_ips)
+        result["xray_count_all"] = xray_count
+        result["xray_ips"] = sorted(xray_ips)
+        
+        # Объединяем множества для получения общего числа уникальных IP
+        all_ips = system_ips.union(xray_ips)
+        result["total_count"] = len(all_ips)
+        result["total_count_all"] = system_count + xray_count
+        result["total_ips"] = sorted(all_ips)
+    else:
+        result["xray_enabled"] = False
+    
+    return result
 
 if __name__ == "__main__":
     import uvicorn
