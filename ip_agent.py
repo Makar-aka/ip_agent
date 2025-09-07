@@ -6,7 +6,7 @@ import ipaddress
 import logging
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from typing import Set, List
+from typing import Set, List, Tuple
 
 load_dotenv()
 
@@ -96,10 +96,15 @@ async def verify_credentials(request: Request):
         )
     return credentials.username
 
-def get_unique_remote_ips(port: int, count_ipv4: bool = True, count_ipv6: bool = True) -> Set[str]:
+def get_connection_stats(port: int, count_ipv4: bool = True, count_ipv6: bool = True) -> Tuple[Set[str], int]:
+    """
+    Возвращает кортеж из множества уникальных IP и общего количества соединений
+    с учётом настроек count_ipv4/count_ipv6
+    """
     ips = set()
+    count_all = 0
     if not (count_ipv4 or count_ipv6):
-        return ips
+        return ips, count_all
     try:
         conns = psutil.net_connections(kind='tcp')
     except Exception:
@@ -132,25 +137,29 @@ def get_unique_remote_ips(port: int, count_ipv4: bool = True, count_ipv6: bool =
         except Exception:
             continue
 
+        # Увеличиваем счётчик с учётом настроек IPv4/IPv6
         if ip_obj.version == 6 and getattr(ip_obj, "ipv4_mapped", None) is not None:
             mapped = str(ip_obj.ipv4_mapped)
             if not count_ipv4:
                 continue
             ips.add(mapped)
+            count_all += 1
             continue
 
         if ip_obj.version == 4:
             if not count_ipv4:
                 continue
             ips.add(str(ip_obj))
+            count_all += 1
             continue
 
         if ip_obj.version == 6:
             if not count_ipv6:
                 continue
             ips.add(str(ip_obj))
+            count_all += 1
 
-    return ips
+    return ips, count_all
 
 @app.get("/health")
 def health():
@@ -158,10 +167,11 @@ def health():
 
 @app.get("/connections")
 def connections(user: str = Depends(verify_credentials)):
-    ips = sorted(get_unique_remote_ips(MONITOR_PORT, COUNT_IPV4, COUNT_IPV6))
+    unique_ips, count_all = get_connection_stats(MONITOR_PORT, COUNT_IPV4, COUNT_IPV6)
     return {
-        "count": len(ips),
-        "ips": ips,
+        "count": len(unique_ips),
+        "count_all": count_all,
+        "ips": sorted(unique_ips),
         "port": MONITOR_PORT,
         "count_ipv4_enabled": COUNT_IPV4,
         "count_ipv6_enabled": COUNT_IPV6,
